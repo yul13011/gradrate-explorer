@@ -1,4 +1,4 @@
-"""IPEDS Graduation Rate Explorer.
+"""College Graduation Rate Explorer.
 
 Streamlit app: users ask natural-language questions about 6-year graduation
 rates at 4-year institutions (IPEDS 2015-2024); Claude parses intent,
@@ -54,6 +54,20 @@ EXAMPLE_QUESTIONS = [
     "Compare graduation rates for men and women at the University of Michigan over the last 10 years",
     "Compare graduation rates by race and ethnicity at UCLA in 2023",
 ]
+
+# Single source of truth for "what this app covers", shown in both the main-area
+# "What can I ask?" expander and the sidebar "What can this explorer do?" button.
+# Update coverage here in one place.
+CAPABILITIES_TEXT = (
+    "This explorer covers 2,000+ four-year U.S. institutions over 10 years "
+    "(IPEDS collection years 2015–2024). You can ask about: bachelor's graduation "
+    "rates overall and by gender, race/ethnicity, and Pell status; 4- vs. 5- vs. "
+    "6-year completion; transfer-out rates; trends over time; and comparisons or "
+    "rankings of individual institutions — including within a state or between "
+    "public and private schools. You can also adjust any chart by asking (title, "
+    "labels, colors, line styles, sorting, axis range). Note: it compares "
+    "individual institutions but does not compute averages across institutions."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -945,7 +959,7 @@ def render_confirmation_form() -> None:
 # App
 # ---------------------------------------------------------------------------
 
-st.set_page_config(page_title="Graduation Rate Explorer", page_icon="🎓", layout="wide")
+st.set_page_config(page_title="College Graduation Rate Explorer", page_icon="🎓", layout="wide")
 
 # Stop Ctrl/Cmd+C (copy) from triggering Streamlit's global "c" = Clear caches
 # shortcut. The listener is registered on the parent WINDOW in the capture phase:
@@ -1041,11 +1055,18 @@ st.markdown(
     unsafe_allow_html=True,
 )
 with st.container(key="app-header"):
-    st.markdown('<h1 class="app-title">🎓 Graduation Rate Explorer</h1>',
+    st.markdown('<h1 class="app-title">🎓 College Graduation Rate Explorer</h1>',
                 unsafe_allow_html=True)
-    st.caption("Ask about 6-year graduation rates at 4-year U.S. institutions "
-               "(IPEDS collection years 2015-2024).  \n"
-               "Prototype — built on public IPEDS data. Verify results before institutional use.")
+    st.caption(
+        "Explore bachelor's degree graduation rates — 4-, 5-, and 6-year — at U.S. "
+        "4-year institutions, using public data from the "
+        "[IPEDS Graduation Rates survey](https://nces.ed.gov/ipeds/) "
+        "(collection years 2015–2024). Prototype: verify results before institutional use."
+    )
+
+# Collapsed capabilities reference, directly below the caption (scrolls with content).
+with st.expander("ℹ️ What can I ask?", expanded=False):
+    st.markdown(CAPABILITIES_TEXT)
 
 if not DB_PATH.exists():
     st.error(f"Database not found: {DB_PATH}")
@@ -1067,6 +1088,11 @@ with st.sidebar:
     if st.button("🧹 New topic (clear conversation)", width="stretch"):
         st.session_state.history = []
         st.session_state.pending = None
+        st.rerun()
+    if st.button("ℹ️ What can this explorer do?", width="stretch"):
+        # Same text as the "What can I ask?" expander, shown as an assistant reply.
+        st.session_state.history.append(
+            {"role": "assistant", "kind": "text", "text": CAPABILITIES_TEXT})
         st.rerun()
     st.subheader("Example questions")
     st.caption("Click to ask.")
