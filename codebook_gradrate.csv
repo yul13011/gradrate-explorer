@@ -1,0 +1,43 @@
+VarName,VarTitle
+iped_yr,IPEDS Year
+UNITID,Institution ID
+INSTNM,Institution name
+STABBR,State abbreviation
+GRRTTOT,"Graduation rate, total cohort"
+GRRTWH,"Graduation rate, White, non-Hispanic"
+GRRTBK,"Graduation rate, Black, non-Hispanic"
+GRRTHS,"Graduation rate, Hispanic"
+GRRTAP,"Graduation rate, Asian/Native Hawaiian/Other Pacific Islander"
+GRRTAN,"Graduation rate, American Indian or Alaska Native"
+GRRTUN,"Graduation rate, Race/ethnicity unknown"
+GRRTNR,"Graduation rate, U.S. Nonresident"
+GRRTM,"Graduation rate, men"
+GRRTW,"Graduation rate, women"
+TRRTTOT,"Transfer-out rate, total cohort"
+GBA4RTT,"Graduation rate - Bachelor degree within 4 years, total"
+GBA5RTT,"Graduation rate - Bachelor degree within 5 years, total"
+GBA6RTT,"Graduation rate - Bachelor degree within 6 years, total"
+GBA6RTM,"Graduation rate - Bachelor degree within 6 years, men"
+GBA6RTW,"Graduation rate - Bachelor degree within 6 years, women"
+GBA6RTWH,"Graduation rate - Bachelor degree within 6 years, White, non-Hispanic"
+GBA6RTBK,"Graduation rate - Bachelor degree within 6 years, Black, non-Hispanic"
+GBA6RTHS,"Graduation rate - Bachelor degree within 6 years, Hispanic"
+GBA6RTAP,"Graduation rate - Bachelor degree within 6 years, Asian/Native Hawaiian/Pacific Islander"
+GBA6RTAN,"Graduation rate - Bachelor degree within 6 years, American Indian or Alaska Native"
+GBA6RTUN,"Graduation rate - Bachelor degree within 6 years, Race/ethnicity unknown"
+GBA6RTNR,"Graduation rate - Bachelor degree within 6 years, U.S. Nonresident"
+GBATRRT,Transfer-out rate - Bachelor cohort
+GRRT2M,"Graduation rate, two or more races"
+GBA6RT2M,"Graduation rate - Bachelor degree within 6 years, two or more races"
+GRRTAS,"Graduation rate, Asian"
+GRRTNH,"Graduation rate, Native Hawaiian or Other Pacific Islander"
+GBA6RTAS,"Graduation rate - Bachelor degree within 6 years, Asian"
+GBA6RTNH,"Graduation rate - Bachelor degree within 6 years, Native Hawaiian or Other Pacific Islander"
+PGGRRTT,Pell Grant recipients - Overall graduation rate within 150 percent of normal time
+PGBA6RT,Pell Grant recipients - Bachelor's degree rate within 6 years
+SSGRRTT,Direct Subsidized  Loan recipients not receiving Pell Grants - Overall graduation rate within 150 percent of normal time
+SSBA6RT,Direct Subsidized  Loan recipients not receiving Pell Grants - Bachelor's degree rate within 6 years
+NRGRRTT,Did not receive Pell Grants or Direct Subsidized  Loans - Overall graduation rate within 150 percent of normal time
+NRBA6RT,Did not receive Pell Grants or Direct Subsidized Loans - Bachelor's degree rate within 6 years
+ICLEVEL,"1 - Four or more years, 2 - At least 2 but less than 4 years, 3 - Less than 2 years (below associate)"
+CONTROL,"1- Public, 2 - Private not-for-profit, 3 - Private for-profit"

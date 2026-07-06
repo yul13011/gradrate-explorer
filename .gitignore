@@ -1,0 +1,45 @@
+# --- Secrets: NEVER commit ---
+# Streamlit Cloud secrets (where ANTHROPIC_API_KEY is configured) — must stay private.
+.streamlit/secrets.toml
+.env
+.env.*
+*.env
+secrets.toml
+
+# --- Raw IPEDS source data (huge: ~5.9 GB; .accdb files exceed GitHub's 100 MB limit) ---
+# The app only needs the derived Gradrate_*.db, which IS committed.
+IPEDS_*/
+*.accdb
+
+# --- Project artifacts not needed to run the app ---
+# R data-build intermediates (app reads the .db, not these), the data-prep script
+# (hardcodes a local path and needs the excluded raw data to run), and the internal
+# planning doc. Excluded by choice; none are required for the deployed app.
+*.rds
+6-yr graduation rate.R
+1-Week MVP Plan - Institutional Intelligence Demo.md
+
+# --- Local tooling / editor config ---
+.claude/
+.vscode/
+.idea/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- R artifacts ---
+.Rhistory
+.RData
+.Rproj.user/
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db

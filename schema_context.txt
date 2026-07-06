@@ -1,0 +1,182 @@
+Table: grad_rates
+Source: IPEDS Graduation Rate (GR) and Graduation Rate 200% (GR200) / Outcome components
+IMPORTANT: This table has NOT been pre-filtered — it contains 2-year, 4-year, and less-than-2-year institutions. This app only covers 4-year institutions, so EVERY query must include the filter: WHERE ICLEVEL = 1
+
+Two metric families live in this table (see the "Which metric" note below):
+- GBA4/GBA5/GBA6 = bachelor's-degree completion within 4 / 5 / 6 years (the bachelor's-seeking cohort). GBA6RTT is THE default "graduation rate" for this app.
+- GRRT = the overall graduation rate within 150% of normal time (the full Graduation Rate Survey cohort). Related to, but not identical to, GBA6.
+All rate columns are whole-number percentages (integer, 0-100).
+
+Columns:
+
+Identifiers / metadata:
+- iped_yr (text): IPEDS collection year label, formatted as a string like '2015-16', '2016-17', etc.
+- year (integer): derived from iped_yr using the FIRST year in the label (e.g. "2015-16" → 2015). This represents the collection/reporting year, NOT the year students entered college — the underlying entering cohort started approximately 6 years earlier (e.g. year=2015 reflects outcomes for a cohort that entered around 2009). Use this column for filtering/sorting by year (e.g. WHERE year BETWEEN 2015 AND 2024).
+- UNITID (integer): IPEDS unique institution identifier
+- INSTNM (text): official institution name
+- STABBR (text): 2-letter state abbreviation
+- ICLEVEL (integer): institution level — 1 = four-or-more-year, 2 = at least 2 but less than 4 years, 3 = less than 2 years. ALWAYS filter to ICLEVEL = 1 for this app.
+- CONTROL (integer): institution control — 1 = public, 2 = private not-for-profit, 3 = private for-profit
+
+6-year bachelor's graduation rate (GBA6RT*) — THE primary/default metric for this app:
+- GBA6RTT (integer, 0-100): 6-year bachelor's graduation rate as a whole-number percentage (e.g. 55 = 55%), total cohort
+- GBA6RTM (integer, 0-100): 6-year bachelor's graduation rate, men
+- GBA6RTW (integer, 0-100): 6-year bachelor's graduation rate, women
+- GBA6RTWH (integer, 0-100): 6-year bachelor's graduation rate, White, non-Hispanic
+- GBA6RTBK (integer, 0-100): 6-year bachelor's graduation rate, Black, non-Hispanic
+- GBA6RTHS (integer, 0-100): 6-year bachelor's graduation rate, Hispanic
+- GBA6RTAS (integer, 0-100): 6-year bachelor's graduation rate, Asian
+- GBA6RTNH (integer, 0-100): 6-year bachelor's graduation rate, Native Hawaiian/Other Pacific Islander
+- GBA6RTAP (integer, 0-100): 6-year bachelor's graduation rate, Asian/Native Hawaiian/Pacific Islander COMBINED (legacy category — see the race note; do not mix with AS + NH in the same breakdown)
+- GBA6RTAN (integer, 0-100): 6-year bachelor's graduation rate, American Indian/Alaska Native
+- GBA6RT2M (integer, 0-100): 6-year bachelor's graduation rate, two or more races
+- GBA6RTUN (integer, 0-100): 6-year bachelor's graduation rate, race/ethnicity unknown
+- GBA6RTNR (integer, 0-100): 6-year bachelor's graduation rate, U.S. Nonresident
+
+4- and 5-year bachelor's graduation rate (total cohort only — no subgroup breakdowns exist at 4 or 5 years):
+- GBA4RTT (integer, 0-100): 4-year bachelor's graduation rate, total cohort
+- GBA5RTT (integer, 0-100): 5-year bachelor's graduation rate, total cohort
+
+Overall graduation rate within 150% of normal time (GRRT*, full GRS cohort). Distinct from the bachelor's-within-N-years GBA* metrics above:
+- GRRTTOT (integer, 0-100): overall graduation rate within 150% of normal time, total cohort
+- GRRTM (integer, 0-100): 150%-time graduation rate, men
+- GRRTW (integer, 0-100): 150%-time graduation rate, women
+- GRRTWH (integer, 0-100): 150%-time graduation rate, White, non-Hispanic
+- GRRTBK (integer, 0-100): 150%-time graduation rate, Black, non-Hispanic
+- GRRTHS (integer, 0-100): 150%-time graduation rate, Hispanic
+- GRRTAS (integer, 0-100): 150%-time graduation rate, Asian
+- GRRTNH (integer, 0-100): 150%-time graduation rate, Native Hawaiian/Other Pacific Islander
+- GRRTAP (integer, 0-100): 150%-time graduation rate, Asian/Native Hawaiian/Pacific Islander COMBINED (legacy category — see the race note; do not mix with AS + NH)
+- GRRTAN (integer, 0-100): 150%-time graduation rate, American Indian/Alaska Native
+- GRRT2M (integer, 0-100): 150%-time graduation rate, two or more races
+- GRRTUN (integer, 0-100): 150%-time graduation rate, race/ethnicity unknown
+- GRRTNR (integer, 0-100): 150%-time graduation rate, U.S. Nonresident
+
+Transfer-out rates:
+- TRRTTOT (integer, 0-100): transfer-out rate, total GRS cohort
+- GBATRRT (integer, 0-100): transfer-out rate, bachelor's cohort
+
+Pell Grant / federal-loan recipient subgroups (data begins in collection year 2016; 2015 is NULL for these). Each group has a 6-year-bachelor's version (…BA6RT) and a 150%-time-overall version (…GRRTT):
+- PGBA6RT (integer, 0-100): 6-year bachelor's graduation rate, Pell Grant recipients
+- SSBA6RT (integer, 0-100): 6-year bachelor's graduation rate, subsidized-loan recipients who did NOT receive Pell
+- NRBA6RT (integer, 0-100): 6-year bachelor's graduation rate, received neither Pell nor a subsidized loan
+- PGGRRTT (integer, 0-100): 150%-time overall graduation rate, Pell Grant recipients
+- SSGRRTT (integer, 0-100): 150%-time overall graduation rate, subsidized-loan recipients who did NOT receive Pell
+- NRGRRTT (integer, 0-100): 150%-time overall graduation rate, received neither Pell nor a subsidized loan
+
+Notes:
+- Which metric to use: an unqualified "graduation rate" ALWAYS means the 6-year bachelor's rate (GBA6RT* family; GBA6RTT for the total). Use GBA4RTT / GBA5RTT only when the user explicitly says "4-year" / "5-year". Use the GRRT* family only when the user explicitly asks for the "overall," "150% of normal time," or "GRS" graduation rate. Never silently substitute one family for another.
+- Rate columns are whole-number percentages (0-100), not decimals. Display them with a % sign, don't multiply by 100 again.
+- Rate columns may be NULL where IPEDS suppressed small-n cells (or, for the Pell/loan columns, before 2016) — treat NULL as missing, never zero.
+- Race categories: AP (GBA6RTAP / GRRTAP) is the legacy COMBINED "Asian/Native Hawaiian/Other Pacific Islander" category; AS (…AS, Asian) and NH (…NH, Native Hawaiian/Pacific Islander) are the separate current categories. For a by-race breakdown prefer the split AS + NH; use AP only when the user explicitly wants the combined figure. Never include AP alongside AS and NH in the same breakdown — that double-counts.
+- IMPORTANT — aggregate questions must be declined: this database contains institution-level rates only, with no cohort counts (numerators/denominators). Cross-institution aggregates (e.g. "the national graduation rate," "the average graduation rate of all 4-year institutions," "the overall rate in Massachusetts") cannot be computed correctly here: an unweighted average of institution rates differs substantially from the student-weighted aggregate that official sources like NCES publish (e.g. ~55% unweighted vs ~65% weighted), because institutions of very different sizes count equally. When a user asks for any cross-institution average, aggregate, or "overall/national/statewide rate," DECLINE to compute it and explain briefly: "This prototype holds institution-level rates without underlying cohort counts, so cross-institution averages would be unweighted and differ from official student-weighted figures (like NCES aggregates). I can compare specific institutions instead." Ranking and filtering across institutions (highest/lowest/top-N) remain fine — only averaging/aggregating across institutions is out of scope. (Note: the GRRT* "overall/150%-time" columns are a per-institution metric and are fine to query for a specific institution — this rule is only about averaging ACROSS institutions.)
+- If a user asks about a specific year's graduation rate (e.g. "2020"), that reflects the collection/reporting year, not when students started college. If a user explicitly asks about "students who started in year X," compute the corresponding collection year as X + 6 rather than matching X directly against the year column.
+- "Non-Pell" is ambiguous: the subsidized-loan (…SS…) and neither (…NR…) columns are separate groups. Default: combine them if a user asks for "non-Pell" without specifying further. Use the 6-year-bachelor's versions (SSBA6RT, NRBA6RT) by default; use the 150%-time versions (SSGRRTT, NRGRRTT) only if the user asked for the overall/150% rate.
+- This table is NOT pre-filtered by institution level. Every query in this app must include WHERE ICLEVEL = 1 to restrict to 4-year institutions.
+- Institution names can be ambiguous (e.g. over 20 institutions contain "Washington," including 3 separate University of Washington campuses). Use the confirm-before-execute flow for any non-exact or multi-match name lookup.
+
+Named institution groups (not in the database — provided here since IPEDS has no group concept):
+- Ivy League: Harvard University, Yale University, Princeton University, Columbia University in the City of New York, University of Pennsylvania, Brown University, Cornell University, Dartmouth College
+- Users may also define their own ad hoc comparison sets by naming institutions directly; resolve these the same way as any individual institution lookup (exact match if unambiguous, confirm-before-execute if ambiguous).
+
+Display name mapping (for table headers and chart labels — use these instead of raw column names when showing results to users):
+- iped_yr: "IPEDS Collection Year"
+- year: "Year"
+- UNITID: "IPEDS Institution ID"
+- INSTNM: "Institution"
+- STABBR: "State"
+- ICLEVEL: "Institution Level"
+- CONTROL: "Institution Control"
+- GBA6RTT: "6-Year Graduation Rate"
+- GBA6RTM: "6-Year Graduation Rate (Men)"
+- GBA6RTW: "6-Year Graduation Rate (Women)"
+- GBA6RTWH: "6-Year Graduation Rate (White, non-Hispanic)"
+- GBA6RTBK: "6-Year Graduation Rate (Black, non-Hispanic)"
+- GBA6RTHS: "6-Year Graduation Rate (Hispanic)"
+- GBA6RTAS: "6-Year Graduation Rate (Asian)"
+- GBA6RTNH: "6-Year Graduation Rate (Native Hawaiian/Pacific Islander)"
+- GBA6RTAP: "6-Year Graduation Rate (Asian/Pacific Islander)"
+- GBA6RTAN: "6-Year Graduation Rate (American Indian/Alaska Native)"
+- GBA6RT2M: "6-Year Graduation Rate (Two or More Races)"
+- GBA6RTUN: "6-Year Graduation Rate (Race/Ethnicity Unknown)"
+- GBA6RTNR: "6-Year Graduation Rate (Nonresident)"
+- GBA4RTT: "4-Year Graduation Rate"
+- GBA5RTT: "5-Year Graduation Rate"
+- GRRTTOT: "Overall Graduation Rate (150% Time)"
+- GRRTM: "Overall Graduation Rate (Men)"
+- GRRTW: "Overall Graduation Rate (Women)"
+- GRRTWH: "Overall Graduation Rate (White, non-Hispanic)"
+- GRRTBK: "Overall Graduation Rate (Black, non-Hispanic)"
+- GRRTHS: "Overall Graduation Rate (Hispanic)"
+- GRRTAS: "Overall Graduation Rate (Asian)"
+- GRRTNH: "Overall Graduation Rate (Native Hawaiian/Pacific Islander)"
+- GRRTAP: "Overall Graduation Rate (Asian/Pacific Islander)"
+- GRRTAN: "Overall Graduation Rate (American Indian/Alaska Native)"
+- GRRT2M: "Overall Graduation Rate (Two or More Races)"
+- GRRTUN: "Overall Graduation Rate (Race/Ethnicity Unknown)"
+- GRRTNR: "Overall Graduation Rate (Nonresident)"
+- TRRTTOT: "Transfer-Out Rate (Total Cohort)"
+- GBATRRT: "Transfer-Out Rate (Bachelor's Cohort)"
+- PGBA6RT: "6-Year Graduation Rate (Pell Recipients)"
+- SSBA6RT: "6-Year Graduation Rate (Non-Pell, Subsidized Loan)"
+- NRBA6RT: "6-Year Graduation Rate (Non-Pell, No Subsidized Loan)"
+- PGGRRTT: "Overall Graduation Rate (Pell Recipients)"
+- SSGRRTT: "Overall Graduation Rate (Non-Pell, Subsidized Loan)"
+- NRGRRTT: "Overall Graduation Rate (Non-Pell, No Subsidized Loan)"
+
+Usage guidance: apply this mapping to rename DataFrame columns before displaying any table to the user, and use these same labels as default chart titles/axis labels unless the user has explicitly requested a custom title or label as a follow-up.
+
+Visualization guidance:
+- For trend/comparison questions involving one or more institutions across years, reshape query results into one row per year with one column per institution, and render as a line chart (year on x-axis, graduation rate on y-axis).
+
+Example question -> SQL pairs (tested against the live database):
+
+1. Direct/unambiguous institution:
+Q: "What's MIT's 6-year graduation rate in 2023?"
+SQL: SELECT year, GBA6RTT FROM grad_rates WHERE INSTNM = 'Massachusetts Institute of Technology' AND year = 2023;
+
+2. Ambiguous institution name (should trigger confirm-before-execute):
+Q: "What's Cornell's graduation rate?"
+Matches both 'Cornell University' and 'Cornell College' -> ask "Did you mean Cornell University or Cornell College?" before running any query.
+
+3. Comparison across institutions:
+Q: "Compare Harvard and Yale's graduation rates in 2023"
+SQL: SELECT INSTNM, GBA6RTT FROM grad_rates WHERE INSTNM IN ('Harvard University','Yale University') AND year = 2023;
+
+4. Pell subgroup:
+Q: "What's the graduation rate gap between Pell and non-Pell students at Cornell University in 2023?"
+SQL: SELECT year, PGBA6RT, SSBA6RT, NRBA6RT FROM grad_rates WHERE INSTNM = 'Cornell University' AND year = 2023;
+(Remember: combine SSBA6RT and NRBA6RT as "non-Pell" unless the user specifies otherwise.)
+
+5. Trend over time:
+Q: "How has MIT's graduation rate changed over the last 10 years?"
+SQL: SELECT year, GBA6RTT FROM grad_rates WHERE INSTNM = 'Massachusetts Institute of Technology' ORDER BY year;
+
+6. Race/ethnicity subgroup:
+Q: "Compare graduation rates by race at UC Berkeley in 2023"
+SQL: SELECT year, GBA6RTWH, GBA6RTBK, GBA6RTHS, GBA6RTAS, GBA6RTAN, GBA6RT2M FROM grad_rates WHERE INSTNM = 'University of California-Berkeley' AND year = 2023;
+
+7. Ranking/filter:
+Q: "Which Massachusetts institution had the highest graduation rate in 2023?"
+SQL: SELECT INSTNM, GBA6RTT FROM grad_rates WHERE STABBR = 'MA' AND year = 2023 AND GBA6RTT IS NOT NULL ORDER BY GBA6RTT DESC LIMIT 1;
+
+8. Out-of-scope (should gracefully decline, not attempt SQL):
+Q: "What's the average SAT score at Harvard?"
+No SQL — respond: "I don't have admissions test score data — I can only answer questions about graduation and transfer-out rates for 4-year institutions."
+
+9. Group-based trend visualization:
+Q: "Show a 10-year trend line of Yale's graduation rate compared to other Ivy League schools"
+SQL: SELECT INSTNM, year, GBA6RTT FROM grad_rates WHERE INSTNM IN ('Harvard University','Yale University','Princeton University','Columbia University in the City of New York','University of Pennsylvania','Brown University','Cornell University','Dartmouth College') ORDER BY INSTNM, year;
+Render as a multi-line chart, one line per institution.
+
+10. 4-year (or 5-year) rate — only when the user says so explicitly:
+Q: "What's MIT's 4-year graduation rate in 2023?"
+SQL: SELECT year, GBA4RTT FROM grad_rates WHERE INSTNM = 'Massachusetts Institute of Technology' AND year = 2023;
+
+11. Compare completion horizons for one institution:
+Q: "How do MIT's 4-, 5-, and 6-year graduation rates compare over time?"
+SQL: SELECT year, GBA4RTT, GBA5RTT, GBA6RTT FROM grad_rates WHERE INSTNM = 'Massachusetts Institute of Technology' ORDER BY year;
+
+12. Overall (150%-of-normal-time) rate — only when the user asks for the "overall / 150% / GRS" rate:
+Q: "What's Cornell University's overall graduation rate within 150% of normal time in 2023?"
+SQL: SELECT year, GRRTTOT FROM grad_rates WHERE INSTNM = 'Cornell University' AND year = 2023;

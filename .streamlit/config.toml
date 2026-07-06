@@ -1,0 +1,8 @@
+# Visual identity for the Graduation Rate Explorer (higher-ed IR audience).
+# Warm off-white canvas, near-black text, navy primary, light sidebar.
+[theme]
+base = "light"
+backgroundColor = "#FAF8F5"          # warm off-white canvas
+secondaryBackgroundColor = "#FFFFFF" # light sidebar + input surfaces
+textColor = "#1A1E23"                # near-black body text
+primaryColor = "#1F3A5F"             # navy — buttons, focus, accents
