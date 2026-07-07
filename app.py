@@ -1,4 +1,4 @@
-"""IPEDS Graduation Rate Explorer.
+"""College Graduation Rate Explorer.
 
 Streamlit app: users ask natural-language questions about 6-year graduation
 rates at 4-year institutions (IPEDS 2015-2024); Claude parses intent,
@@ -17,10 +17,13 @@ Run:  streamlit run app.py   (requires ANTHROPIC_API_KEY in the environment)
 """
 
 import json
+import logging
 import math
 import os
 import re
 import sqlite3
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -28,12 +31,19 @@ import altair as alt
 import anthropic
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 from pydantic import BaseModel
+from streamlit_gsheets import GSheetsConnection
+
+# Guarantee a logging handler so friendly_error()'s logging.exception() traceback
+# always reaches the terminal — real errors must never be silently hidden behind the
+# visitor-facing message. basicConfig is a no-op if handlers already exist (e.g.
+# Streamlit's own), so this only helps and never double-configures.
+logging.basicConfig(level=logging.INFO)
 
 APP_DIR = Path(__file__).parent
 DB_PATH = APP_DIR / "Gradrate_150pct_2015_2024_4yr_inst.db"
 SCHEMA_PATH = APP_DIR / "schema_context.txt"
+BANNER_PATH = APP_DIR / "assets" / "header.jpg"
 # Per-step models: fast models for the light structured/prose steps, the strongest
 # model kept for SQL correctness. Change these to re-balance speed vs. quality.
 MODEL_PARSE = "claude-haiku-4-5-20251001"  # intent + follow-up rewrite + name extraction
@@ -54,6 +64,35 @@ EXAMPLE_QUESTIONS = [
     "Compare graduation rates for men and women at the University of Michigan over the last 10 years",
     "Compare graduation rates by race and ethnicity at UCLA in 2023",
 ]
+
+# The first three double as the empty-state onboarding chips shown in the MAIN
+# column (so mobile visitors, who can't see the collapsed sidebar, still get
+# examples). Sliced from EXAMPLE_QUESTIONS to keep a single source.
+HOME_EXAMPLE_QUESTIONS = EXAMPLE_QUESTIONS[:3]
+
+WELCOME_LINE = ("Ask me anything about college graduation rates — "
+                "or try an example below.")
+
+# Visitor-facing error copy. Raw exception text / stack traces must NEVER reach a
+# visitor (details are logged server-side instead); these are the only messages shown.
+USAGE_LIMIT_MSG = ("This prototype has hit its usage limit for now — "
+                   "please try again later.")
+GENERIC_ERROR_MSG = ("Something went wrong on our end. "
+                     "Please try again in a moment.")
+
+# Single source of truth for "what this app covers", shown in both the main-area
+# "What can I ask?" expander and the sidebar "What can this explorer do?" button.
+# Update coverage here in one place.
+CAPABILITIES_TEXT = (
+    "This explorer covers 2,000+ four-year U.S. institutions over 10 years "
+    "(IPEDS collection years 2015–2024). You can ask about: bachelor's graduation "
+    "rates overall and by gender, race/ethnicity, and Pell status; 4- vs. 5- vs. "
+    "6-year completion; transfer-out rates; trends over time; and comparisons or "
+    "rankings of individual institutions — including within a state or between "
+    "public and private schools. You can also adjust any chart by asking (title, "
+    "labels, colors, line styles, sorting, axis range). Note: it compares "
+    "individual institutions but does not compute averages across institutions."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -125,14 +164,43 @@ class ChartSpec(BaseModel):
 # Cached resources
 # ---------------------------------------------------------------------------
 
+def resolve_api_key() -> Optional[str]:
+    """The Anthropic API key, from the environment or Streamlit secrets. Streamlit
+    copies top-level `secrets.toml` keys into `os.environ`, so the env check covers
+    a key placed in either spot; the `st.secrets` read is a belt-and-suspenders
+    fallback. Returns None when no key is configured anywhere."""
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if key:
+        return key
+    try:
+        return st.secrets.get("ANTHROPIC_API_KEY")  # raises if no secrets file exists
+    except Exception:
+        return None
+
+
 @st.cache_resource
 def get_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic()
+    # Pass the key explicitly so a missing key is a clean None rather than the SDK's
+    # opaque "Could not resolve authentication method" TypeError at request time.
+    key = resolve_api_key()
+    return anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
 
 
 @st.cache_data
 def load_schema_context() -> str:
     return SCHEMA_PATH.read_text(encoding="utf-8")
+
+
+@st.cache_data
+def header_banner_datauri() -> str:
+    """Base64 data URI for the committed header image, so it renders inline without
+    a media server (works identically locally and on Streamlit Cloud). Empty string
+    if the file is missing, so the banner is simply skipped rather than erroring."""
+    import base64
+    try:
+        return "data:image/jpeg;base64," + base64.b64encode(BANNER_PATH.read_bytes()).decode()
+    except OSError:
+        return ""
 
 
 @st.cache_data
@@ -550,9 +618,12 @@ Result ({len(df)} row(s){note}):
 # ---------------------------------------------------------------------------
 
 def run_full_query(question: str, resolved_names: list[str],
-                   interpreted_as: Optional[str] = None) -> dict:
+                   interpreted_as: Optional[str] = None, status=None) -> dict:
     """SQL -> exec -> streamed summary. Renders the assistant bubble live (so the
-    summary appears token-by-token) and returns the completed history item."""
+    summary appears token-by-token) and returns the completed history item.
+    `status` is an optional st.status handle whose label is advanced per stage."""
+    if status is not None:
+        status.update(label="Querying IPEDS data…")
     plan = generate_sql(question, resolved_names)
 
     if plan.sql is None:
@@ -579,6 +650,8 @@ def run_full_query(question: str, resolved_names: list[str],
     }
     # The new item's index once appended (used for a stable download-button key).
     idx = len(st.session_state.history)
+    if status is not None:
+        status.update(label="Writing summary…")
     with st.chat_message("assistant"):
         if interpreted_as:
             st.caption(f"Interpreted as: *{interpreted_as}*")
@@ -588,8 +661,9 @@ def run_full_query(question: str, resolved_names: list[str],
     return item
 
 
-def handle_new_question(question: str) -> None:
-    """Parse + resolve. Either answers directly or parks a confirmation in session_state."""
+def handle_new_question(question: str, status=None) -> None:
+    """Parse + resolve. Either answers directly or parks a confirmation in session_state.
+    `status` is an optional st.status handle advanced as the pipeline progresses."""
     parsed = parse_question(question, recent_context())
 
     if parsed.intent == "out_of_scope":
@@ -609,6 +683,8 @@ def handle_new_question(question: str) -> None:
                 "text": "There's no chart to adjust yet — ask a data question first.",
             })
             return
+        if status is not None:
+            status.update(label="Adjusting the chart…")
         new_chart, unsupported = adjust_chart(parsed.standalone_question, last)
         if unsupported:
             st.session_state.history.append({
@@ -622,7 +698,7 @@ def handle_new_question(question: str) -> None:
             "role": "assistant", "kind": "result",
             "summary": "Here's the updated chart.",
             "sql": last["sql"], "df": last["df"],
-            "interpreted_as": None, "chart": new_chart,
+            "interpreted_as": None, "chart": new_chart, "is_adjustment": True,
         })
         return
 
@@ -635,10 +711,12 @@ def handle_new_question(question: str) -> None:
     not_found: list[str] = []
 
     for mention in parsed.mentions:
-        status, names = resolve_mention(mention)
-        if status == "resolved":
+        # NB: keep this name distinct from the `status` progress-handle parameter —
+        # reusing `status` here would clobber it and break run_full_query's .update().
+        match_status, names = resolve_mention(mention)
+        if match_status == "resolved":
             resolved[mention.text] = names
-        elif status == "ambiguous":
+        elif match_status == "ambiguous":
             ambiguous[mention.text] = names
         else:
             not_found.append(mention.text)
@@ -663,8 +741,28 @@ def handle_new_question(question: str) -> None:
 
     all_names = [n for names in resolved.values() for n in names]
     st.session_state.history.append(
-        run_full_query(question_final, all_names, interpreted_as)
+        run_full_query(question_final, all_names, interpreted_as, status)
     )
+
+
+def friendly_error(exc: Exception) -> str:
+    """Map any exception to safe, visitor-facing copy. Quota / rate-limit / billing
+    problems get the usage-limit message; everything else gets a generic line. The
+    raw exception is logged server-side and NEVER shown to the visitor."""
+    logging.getLogger("app").exception("request failed: %s", type(exc).__name__)
+    # Rate limit (429) is the clearest quota signal.
+    if isinstance(exc, anthropic.RateLimitError):
+        return USAGE_LIMIT_MSG
+    # Other API status errors: treat billing / quota / overloaded as "try later".
+    if isinstance(exc, anthropic.APIStatusError):
+        code = getattr(exc, "status_code", None)
+        if code in (402, 429, 529):   # payment required / rate limit / overloaded
+            return USAGE_LIMIT_MSG
+        blob = f"{getattr(exc, 'message', '')} {getattr(exc, 'body', '')}".lower()
+        if any(k in blob for k in
+               ("credit balance", "billing", "quota", "usage limit", "insufficient")):
+            return USAGE_LIMIT_MSG
+    return GENERIC_ERROR_MSG
 
 
 # ---------------------------------------------------------------------------
@@ -842,6 +940,9 @@ def render_result_visuals(item: dict, idx: int) -> None:
     """Chart + CSV download + (optional) table. Shared by live streaming and replay;
     does NOT render the summary text (the caller handles that)."""
     chart_drawn = render_chart(item)
+    if chart_drawn:
+        st.caption("💡 You can ask me to adjust this chart — colors, sorting, "
+                   "labels, axis range.")
     display_df = item["df"].rename(columns=display_names())
     csv_bytes = display_df.to_csv(index=False).encode("utf-8")
     # Visual-first: the table appears only on explicit request ("show me the
@@ -895,15 +996,17 @@ def render_confirmation_form() -> None:
     with st.chat_message("assistant"):
         st.write("Before I run anything — a couple of names match more than one institution. "
                  "Which did you mean?")
-        with st.form("confirm_form"):
-            choices: dict[str, str] = {}
-            for text, options in pending["ambiguous"].items():
-                choices[text] = st.selectbox(
-                    f'"{text}"', options + ["None of these"], key=f"choice_{text}",
-                )
-            col_run, col_cancel = st.columns(2)
-            run = col_run.form_submit_button("Run query", type="primary")
-            cancel = col_cancel.form_submit_button("Cancel")
+        # Keyed wrapper so the ghost-navy button CSS scopes to these two buttons.
+        with st.container(key="confirm-actions"):
+            with st.form("confirm_form"):
+                choices: dict[str, str] = {}
+                for text, options in pending["ambiguous"].items():
+                    choices[text] = st.selectbox(
+                        f'"{text}"', options + ["None of these"], key=f"choice_{text}",
+                    )
+                col_run, col_cancel = st.columns(2)
+                run = col_run.form_submit_button("Run query")
+                cancel = col_cancel.form_submit_button("Cancel")
 
     if cancel:
         st.session_state.pending = None
@@ -930,22 +1033,87 @@ def render_confirmation_form() -> None:
         interpreted_as = pending.get("interpreted_as")
         st.session_state.pending = None
         all_names = [n for names in resolved.values() for n in names]
-        with st.spinner("Running query..."):
-            try:
-                st.session_state.history.append(
-                    run_full_query(question, all_names, interpreted_as))
-            except Exception as exc:  # surface API/SQL errors in the chat
-                st.session_state.history.append({
-                    "role": "assistant", "kind": "text", "text": f"Something went wrong: {exc}",
-                })
+        # Parse already happened; this path starts at the query stage.
+        status = st.status("Querying IPEDS data…", expanded=False)
+        try:
+            st.session_state.history.append(
+                run_full_query(question, all_names, interpreted_as, status))
+            status.update(label="Done", state="complete")
+        except Exception as exc:
+            status.update(label="Something went wrong", state="error")
+            st.session_state.history.append({
+                "role": "assistant", "kind": "text", "text": friendly_error(exc),
+            })
         st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Feedback (writes to a Google Sheet via st-gsheets-connection, service-account mode)
+# ---------------------------------------------------------------------------
+
+FEEDBACK_COLUMNS = ["timestamp", "session_id", "rating", "comment", "source"]
+
+
+def submit_feedback(rating: Optional[int], comment: str, source: str) -> None:
+    """Append one feedback row to the Google Sheet. NEVER raises to the caller and
+    never surfaces an error to the visitor — a feedback write failure must not break
+    the app. The user is thanked and marked as having given feedback either way."""
+    st.session_state.feedback_given = True
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)  # cached by Streamlit
+        existing = conn.read(worksheet=0, ttl=0).dropna(how="all")
+        existing = (existing.reindex(columns=FEEDBACK_COLUMNS)
+                    if len(existing) else pd.DataFrame(columns=FEEDBACK_COLUMNS))
+        row = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": st.session_state.session_id,
+            "rating": (rating + 1) if rating is not None else "",  # st.feedback is 0-indexed
+            "comment": (comment or "").strip(),
+            "source": source,
+        }
+        combined = pd.concat([existing, pd.DataFrame([row])],
+                             ignore_index=True)[FEEDBACK_COLUMNS]
+        conn.update(worksheet=0, data=combined)
+    except Exception:
+        logging.getLogger("feedback").exception("feedback write failed (source=%s)", source)
+    st.toast("Thanks — this helps improve the prototype!", icon="✅")
+
+
+def render_feedback_widget(source: str, key_prefix: str) -> None:
+    """Shared star-rating + optional-comment + send widget. Rendered identically in
+    both placements (sidebar + inline); all label/star/button styling lives in the
+    global CSS block, scoped by the `fb_*` widget keys."""
+    # Label as styled markdown (NOT st.caption) so it reads as a near-black label,
+    # identical in the sidebar and the main column.
+    st.markdown('<p class="fb-label">How useful is this explorer so far?</p>',
+                unsafe_allow_html=True)
+    rating = st.feedback("stars", key=f"fb_stars_{key_prefix}")
+    # The prompt lives in the placeholder; label is collapsed so nothing renders above.
+    comment = st.text_area(
+        "Feedback comment", key=f"fb_comment_{key_prefix}", height=68,
+        placeholder="What would make it more useful? (optional)",
+        label_visibility="collapsed")
+    if st.button("Send feedback", key=f"fb_send_{key_prefix}"):
+        if rating is None and not (comment or "").strip():
+            st.caption("Pick a star rating or add a comment first.")
+        else:
+            submit_feedback(rating, comment, source)
+            st.rerun()
+
+
+def question_answer_indices() -> list[int]:
+    """History indices of genuine question answers (result items, excluding chart
+    adjustments). Used to trigger the one-time inline feedback prompt."""
+    return [i for i, it in enumerate(st.session_state.history)
+            if it.get("role") == "assistant" and it.get("kind") == "result"
+            and not it.get("is_adjustment")]
 
 
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
-st.set_page_config(page_title="Graduation Rate Explorer", page_icon="🎓", layout="wide")
+st.set_page_config(page_title="College Graduation Rate Explorer", page_icon="🎓", layout="wide")
 
 # Stop Ctrl/Cmd+C (copy) from triggering Streamlit's global "c" = Clear caches
 # shortcut. The listener is registered on the parent WINDOW in the capture phase:
@@ -954,98 +1122,248 @@ st.set_page_config(page_title="Graduation Rate Explorer", page_icon="🎓", layo
 # shortcut handler during mount), regardless of registration order. We only
 # stopImmediatePropagation (not preventDefault), so the browser's native copy is
 # untouched. Runs from the component iframe (same-origin: sandbox allows it).
-components.html(
-    """
-    <script>
-      (function () {
-        const win = window.parent;
-        if (win.__copyShortcutGuard) return;
-        win.__copyShortcutGuard = true;
-        const swallowCopy = function (e) {
-          const k = (e.key || '').toLowerCase();
-          if ((e.ctrlKey || e.metaKey) && (k === 'c' || e.keyCode === 67 || e.which === 67)) {
-            e.stopImmediatePropagation();  // hide it from Streamlit's shortcut handler
-          }
-        };
-        // Belt-and-suspenders: window first (beats any document listener), then
-        // document, both in the capture phase.
-        win.addEventListener('keydown', swallowCopy, true);
-        win.document.addEventListener('keydown', swallowCopy, true);
-      })();
-    </script>
-    """,
-    height=0,
-)
+# st.iframe (raw-HTML form) replaces the deprecated st.components.v1.html; it embeds
+# the same srcdoc iframe (scripts run). Unlike components.html, st.iframe rejects
+# height=0, so render at height=1 inside a keyed container that CSS collapses to
+# display:none (the `.st-key-copy-guard` rule). The script still executes — verified
+# via the window.__copyShortcutGuard flag it sets on the parent window.
+with st.container(key="copy-guard"):
+    st.iframe(
+        """
+        <script>
+          (function () {
+            const win = window.parent;
+            if (win.__copyShortcutGuard) return;
+            win.__copyShortcutGuard = true;
+            const swallowCopy = function (e) {
+              const k = (e.key || '').toLowerCase();
+              if ((e.ctrlKey || e.metaKey) && (k === 'c' || e.keyCode === 67 || e.which === 67)) {
+                e.stopImmediatePropagation();  // hide it from Streamlit's shortcut handler
+              }
+            };
+            // Belt-and-suspenders: window first (beats any document listener), then
+            // document, both in the capture phase.
+            win.addEventListener('keydown', swallowCopy, true);
+            win.document.addEventListener('keydown', swallowCopy, true);
+          })();
+        </script>
+        """,
+        height=1,
+    )
 
 # Minimal identity CSS: serif title with a thin gold accent rule, and navy
 # pill-shaped example buttons. Everything else inherits the config.toml theme.
 st.markdown(
     """
     <style>
-      /* Pin the title + caption to the top as the conversation scrolls.
-         Sticky must sit on the keyed container's WRAPPER (its parent is the tall
-         content block, so it can travel); sticky on the inner container fails
-         because that container's parent is only header-height.
-         top = Streamlit's fixed toolbar height (~3.75rem) so the TITLE pins just
-         below the toolbar instead of hiding behind it (the toolbar is opaque and
-         sits above this header). */
-      [data-testid="stLayoutWrapper"]:has(> [class*="st-key-app-header"]) {
-        position: sticky;
-        top: 3.75rem;
-        z-index: 100;
-        background-color: #FAF8F5;   /* matches canvas so content scrolls under cleanly */
-        padding-top: 0.5rem;
-        padding-bottom: 0.35rem;
+      /* Masthead: ONE container, THREE stacked layers.
+         (1) navy field fills the whole banner; the photo sits on the right third
+         only. (2) a fade dissolves the seam where navy meets the photo's left edge.
+         (3) the title block lives in the clean navy zone on the left. */
+      .masthead {
+        position: relative;
+        width: 100%;
+        height: 200px;
+        overflow: hidden;
+        border-radius: 8px;
+        margin-bottom: 0.2rem;
+        background-color: #1F3A5F;   /* navy fills wherever the photo isn't */
       }
-      /* Cover the strip between the toolbar and the pinned header so scrolled
-         content doesn't flash through the ~0.5rem gap above it. */
-      [data-testid="stLayoutWrapper"]:has(> [class*="st-key-app-header"])::before {
-        content: "";
+      /* Layer 1 — the photo: right ~third only, full height, caps row a touch
+         above the photo's vertical center. */
+      .masthead-img {
         position: absolute;
-        left: 0; right: 0;
-        top: -0.75rem; height: 0.75rem;
-        background-color: #FAF8F5;
+        top: 0;
+        right: 0;
+        width: 33%;
+        height: 100%;
+        /* !important beats Streamlit's default markdown-image sizing/object-fit. */
+        object-fit: cover !important;
+        object-position: center 40% !important;
       }
-      /* !important overrides Streamlit's higher-specificity default heading CSS */
-      h1.app-title {
-        font-family: Georgia, 'Times New Roman', serif !important;
-        font-weight: 600 !important;
-        font-size: 2.1rem;
-        color: #1F3A5F !important;
-        margin: 0 0 0.35rem 0;
-        padding-bottom: 0.4rem;
-        border-bottom: 2px solid #B08A3E;   /* thin gold accent rule */
+      /* Layer 2 — the fade: sits over the photo's left edge (left ~55% of the
+         photo's width), navy → transparent left-to-right, so there is no hard
+         vertical seam between the navy field and the photo. */
+      .masthead-fade {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 67%;                 /* the photo's left edge */
+        width: 18%;                /* ~55% of the photo's 33% width */
+        background: linear-gradient(to right, #1F3A5F 0%, rgba(31, 58, 95, 0) 100%);
       }
-      /* Example-question pills (scoped to the keyed sidebar container) */
+      /* Layer 3 — the title, in the navy zone, capped to the left ~two-thirds so
+         it can never reach the photo. */
+      .masthead-text {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 67%;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;   /* vertically centered */
+        padding-left: 60px;
+        padding-right: 20px;
+      }
+      .masthead-title {
+        font-family: Georgia, 'Times New Roman', serif;
+        font-weight: 700;
+        font-size: 38px;
+        line-height: 1.1;
+        color: #FAF8F5;
+        margin: 0;
+        /* No nowrap: at wide widths the title is a single line (as in the mockup);
+           at narrower widths it wraps INSIDE the navy zone (the text block is capped
+           at width:67%) rather than spilling onto the photo. */
+      }
+      .masthead-rule {
+        width: 330px;
+        max-width: 100%;
+        height: 4px;
+        background: #B08A3E;        /* gold accent rule */
+        margin-top: 14px;
+      }
+      .masthead-sub {
+        margin-top: 10px;
+        font-size: 16px;
+        color: #C8C3B9;            /* muted gray-gold */
+        font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      }
+      /* Narrow screens: smaller title/rule, shorter banner; the title may wrap but
+         stays inside the navy zone (width:67%), never onto the photo. */
+      @media (max-width: 700px) {
+        .masthead { height: 150px; }
+        .masthead-text { padding-left: 28px; }
+        .masthead-title {
+          font-size: 26px;
+        }
+        .masthead-rule { width: 220px; }
+        /* Hidden on narrow screens: the title can wrap to several lines in the
+           slim navy zone, and the same line is already in the caption below. */
+        .masthead-sub { display: none; }
+      }
+      /* Example-question pills (matches BOTH the sidebar container 'example-pills'
+         and the main-column 'example-pills-home' via the substring selector).
+         Resting state is an outlined pill (faint navy tint + navy text + navy
+         border) so it reads as tappable on touch screens where there is no hover;
+         hover/focus fills solid navy with white text. */
       [class*="st-key-example-pills"] button {
-        background-color: #1F3A5F;
-        color: #FFFFFF;
-        border: none;
+        background-color: rgba(31, 58, 95, 0.05);
+        color: #1F3A5F;
+        border: 1px solid rgba(31, 58, 95, 0.35);
         border-radius: 999px;
         padding: 0.45rem 1rem;
         text-align: left;
         font-size: 0.86rem;
         line-height: 1.3;
-        transition: background-color 0.15s ease;
+        transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
       }
-      [class*="st-key-example-pills"] button:hover {
-        background-color: #2C4E7A;
-        color: #FFFFFF;
-      }
+      [class*="st-key-example-pills"] button:hover,
       [class*="st-key-example-pills"] button:focus:not(:active) {
+        background-color: #1F3A5F;
         color: #FFFFFF;
-        box-shadow: 0 0 0 2px #B08A3E;
+        border-color: #1F3A5F;
+      }
+      /* Main-column onboarding chips reuse the pill styling above (the key
+         'example-pills-home' contains 'example-pills' so the selectors match).
+         Cap the width so the pills don't stretch across the full wide column on
+         desktop; on mobile the container is already narrower than this. */
+      [class*="st-key-example-pills-home"] { max-width: 640px; }
+      /* The Ctrl/Cmd+C-guard iframe is functional-only — hide its 1px container. */
+      [class*="st-key-copy-guard"] { display: none; }
+      /* Friendly empty-state welcome line above the onboarding chips. */
+      .chat-welcome {
+        font-size: 1.02rem;
+        color: #33383F;
+        margin: 0.1rem 0 0.6rem 0;
+      }
+      /* Confirmation-form buttons ("Run query" / "Cancel"): same ghost-navy
+         language as the example pills, but as normal (centered) buttons. */
+      [class*="st-key-confirm-actions"] button {
+        background-color: rgba(31, 58, 95, 0.05);
+        color: #1F3A5F;
+        border: 1px solid rgba(31, 58, 95, 0.35);
+        border-radius: 999px;
+        font-weight: 500;
+        transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      }
+      [class*="st-key-confirm-actions"] button:hover,
+      [class*="st-key-confirm-actions"] button:focus:not(:active) {
+        background-color: #1F3A5F;
+        color: #FFFFFF;
+        border-color: #1F3A5F;
+      }
+      /* ---- Feedback widget (identical in sidebar + inline; scoped by fb_* keys) ---- */
+      /* Question label: near-black, reads as a label (NOT navy like the buttons). */
+      .fb-label {
+        color: #2C2C2A;
+        /* !important beats Streamlit's markdown-paragraph font-size rule. */
+        font-size: 13.5px !important;
+        font-weight: 500;
+        margin: 0 0 0.25rem 0;
+      }
+      /* Stars: gold when filled (aria-checked), warm gray when empty — overrides
+         Streamlit's default bright-yellow star color. */
+      [class*="st-key-fb_stars"] [data-testid="stFeedbackButton"] [data-testid="stIconMaterial"] {
+        color: #C9C4BA !important;
+      }
+      [class*="st-key-fb_stars"] [data-testid="stFeedbackButton"][aria-checked="true"] [data-testid="stIconMaterial"],
+      [class*="st-key-fb_stars"] [data-testid="stFeedbackButton"]:hover [data-testid="stIconMaterial"] {
+        color: #B08A3E !important;
+      }
+      /* Send-feedback button: gold ghost pill, fills solid gold on hover. */
+      [class*="st-key-fb_send"] button {
+        background-color: rgba(176, 138, 62, 0.06);
+        color: #8A6A2F;
+        border: 1px solid #B08A3E;
+        border-radius: 999px;
+        font-weight: 500;
+        transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      }
+      [class*="st-key-fb_send"] button:hover,
+      [class*="st-key-fb_send"] button:focus:not(:active) {
+        background-color: #B08A3E;
+        color: #FFFFFF;
+        border-color: #B08A3E;
+      }
+      .sidebar-credit {
+        font-size: 0.7rem;
+        color: #6b7280;
+        margin-top: 0.25rem;
       }
     </style>
     """,
     unsafe_allow_html=True,
 )
-with st.container(key="app-header"):
-    st.markdown('<h1 class="app-title">🎓 Graduation Rate Explorer</h1>',
-                unsafe_allow_html=True)
-    st.caption("Ask about 6-year graduation rates at 4-year U.S. institutions "
-               "(IPEDS collection years 2015-2024).  \n"
-               "Prototype — built on public IPEDS data. Verify results before institutional use.")
+
+# Masthead: one container, three CSS layers — navy field, photo on the right
+# third, a seam-dissolving fade, and the serif title in the navy zone.
+_masthead_uri = header_banner_datauri()
+_masthead_img = (f'<img class="masthead-img" src="{_masthead_uri}" alt="Graduation caps" />'
+                 if _masthead_uri else "")
+st.markdown(
+    f'<div class="masthead">{_masthead_img}'
+    '<div class="masthead-fade"></div>'
+    '<div class="masthead-text">'
+    '<div class="masthead-title">College Graduation Rate Explorer</div>'
+    '<div class="masthead-rule"></div>'
+    '<div class="masthead-sub">Ask questions about bachelor\'s completion at '
+    '2,000+ U.S. institutions</div>'
+    '</div></div>',
+    unsafe_allow_html=True,
+)
+st.caption(
+    "Explore bachelor's degree graduation rates — 4-, 5-, and 6-year — at U.S. "
+    "4-year institutions, using public data from the "
+    "[IPEDS Graduation Rates survey](https://nces.ed.gov/ipeds/) "
+    "(collection years 2015–2024). Prototype: verify results before institutional use."
+)
+
+# Collapsed capabilities reference, directly below the caption (scrolls with content).
+with st.expander("ℹ️ What can I ask?", expanded=False):
+    st.markdown(CAPABILITIES_TEXT)
 
 if not DB_PATH.exists():
     st.error(f"Database not found: {DB_PATH}")
@@ -1058,15 +1376,36 @@ if "pending" not in st.session_state:
     st.session_state.pending = None
 if "example_click" not in st.session_state:
     st.session_state.example_click = None
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())  # one random ID per session
+if "feedback_given" not in st.session_state:
+    st.session_state.feedback_given = False
 
-if not os.environ.get("ANTHROPIC_API_KEY"):
-    st.sidebar.warning("ANTHROPIC_API_KEY is not set — API calls will fail unless "
-                       "credentials are available another way (e.g. `ant auth login`).")
+# Hard prerequisite: without an API key EVERY query fails (the SDK raises a
+# TypeError that would otherwise surface only as the generic error). Surface it
+# prominently with the exact fix, rather than letting each question fail opaquely.
+if not resolve_api_key():
+    st.error(
+        "**Anthropic API key not found.** This app needs an `ANTHROPIC_API_KEY` to "
+        "answer questions — without it, every query fails.\n\n"
+        "**Fix it (running locally):** add this line at the **top** of "
+        "`.streamlit/secrets.toml` (that file is gitignored, so it is never "
+        "committed), then rerun the app:\n\n"
+        "```toml\nANTHROPIC_API_KEY = \"sk-ant-...\"\n```\n\n"
+        "Or set the `ANTHROPIC_API_KEY` environment variable before `streamlit run`. "
+        "**On Streamlit Cloud:** add it under **Settings → Secrets**."
+    )
+    st.stop()
 
 with st.sidebar:
     if st.button("🧹 New topic (clear conversation)", width="stretch"):
         st.session_state.history = []
         st.session_state.pending = None
+        st.rerun()
+    if st.button("ℹ️ What can this explorer do?", width="stretch"):
+        # Same text as the "What can I ask?" expander, shown as an assistant reply.
+        st.session_state.history.append(
+            {"role": "assistant", "kind": "text", "text": CAPABILITIES_TEXT})
         st.rerun()
     st.subheader("Example questions")
     st.caption("Click to ask.")
@@ -1077,12 +1416,54 @@ with st.sidebar:
                 st.session_state.example_click = ex
                 st.rerun()
 
+    # Permanent feedback section at the bottom of the sidebar.
+    st.divider()
+    if st.session_state.feedback_given:
+        st.caption("✅ Thanks for your feedback!")
+    else:
+        render_feedback_widget("sidebar", "sidebar")
+
+    # Photo credit footer.
+    st.markdown('<div class="sidebar-credit">Photo: Bunly Hort / Unsplash</div>',
+                unsafe_allow_html=True)
+
 chat_col = st.container()
 with chat_col:
     for i, item in enumerate(st.session_state.history):
         render_item(item, i)
     if st.session_state.pending:
         render_confirmation_form()
+
+    # Empty-state onboarding: a friendly welcome line + the first three example
+    # questions as clickable chips, in the MAIN column so mobile visitors (whose
+    # sidebar is collapsed) still get examples. Vanishes for good once anything
+    # enters the history (i.e. after the first answer / interaction).
+    if (not st.session_state.history
+            and not st.session_state.pending
+            and not st.session_state.example_click):
+        st.markdown(f'<p class="chat-welcome">{WELCOME_LINE}</p>',
+                    unsafe_allow_html=True)
+        with st.container(key="example-pills-home"):
+            for ex in HOME_EXAMPLE_QUESTIONS:
+                if st.button(ex, key=f"home_ex_{hash(ex)}", width="stretch"):
+                    st.session_state.example_click = ex
+                    st.rerun()
+
+    # One-time inline feedback prompt: show it directly under the 2nd answer, and
+    # only while that answer is the most recent message. Asking anything else (a new
+    # message appended after it) or submitting feedback makes it disappear for good.
+    _answers = question_answer_indices()
+    if (not st.session_state.feedback_given
+            and len(_answers) == 2
+            and _answers[-1] == len(st.session_state.history) - 1):
+        # No extra lead-in line here — the widget is rendered identically to the
+        # sidebar version (its own "How useful…" label is the heading).
+        render_feedback_widget("inline", "inline")
+
+# When a confirmation is pending the chat input is disabled; explain why so the
+# visitor isn't left wondering that the box is broken.
+if st.session_state.pending:
+    st.caption("💡 Please confirm which institution you meant before I run the query.")
 
 question = st.chat_input(
     "Ask a question about graduation rates...",
@@ -1100,16 +1481,15 @@ if question:
     with chat_col:
         with st.chat_message("user"):
             st.write(question)
-        with st.spinner("Thinking..."):
-            try:
-                handle_new_question(question)
-            except anthropic.AuthenticationError:
-                st.session_state.history.append({
-                    "role": "assistant", "kind": "text",
-                    "text": "Authentication failed — check that ANTHROPIC_API_KEY is set correctly.",
-                })
-            except Exception as exc:
-                st.session_state.history.append({
-                    "role": "assistant", "kind": "text", "text": f"Something went wrong: {exc}",
-                })
+        # Staged progress: the label advances Interpreting -> Querying -> Writing
+        # as handle_new_question / run_full_query move through the pipeline.
+        status = st.status("Interpreting your question…", expanded=False)
+        try:
+            handle_new_question(question, status)
+            status.update(label="Done", state="complete")
+        except Exception as exc:
+            status.update(label="Something went wrong", state="error")
+            st.session_state.history.append({
+                "role": "assistant", "kind": "text", "text": friendly_error(exc),
+            })
     st.rerun()

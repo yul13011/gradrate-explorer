@@ -1,4 +1,4 @@
-# 🎓 Graduation Rate Explorer
+# 🎓 College Graduation Rate Explorer
 
 Ask plain-English questions about U.S. college graduation rates and get back an
 answer, a chart, and a table — powered by the Claude API translating natural
