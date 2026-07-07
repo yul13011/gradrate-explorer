@@ -65,10 +65,11 @@ EXAMPLE_QUESTIONS = [
     "Compare graduation rates by race and ethnicity at UCLA in 2023",
 ]
 
-# The first three double as the empty-state onboarding chips shown in the MAIN
+# The first two double as the empty-state onboarding chips shown in the MAIN
 # column (so mobile visitors, who can't see the collapsed sidebar, still get
-# examples). Sliced from EXAMPLE_QUESTIONS to keep a single source.
-HOME_EXAMPLE_QUESTIONS = EXAMPLE_QUESTIONS[:3]
+# examples). Sliced from EXAMPLE_QUESTIONS to keep a single source. Kept to two
+# (not three) so the fresh-session view fits better on a phone.
+HOME_EXAMPLE_QUESTIONS = EXAMPLE_QUESTIONS[:2]
 
 WELCOME_LINE = ("Ask me anything about college graduation rates — "
                 "or try an example below.")
@@ -1271,8 +1272,10 @@ st.markdown(
          Cap the width so the pills don't stretch across the full wide column on
          desktop; on mobile the container is already narrower than this. */
       [class*="st-key-example-pills-home"] { max-width: 640px; }
-      /* The Ctrl/Cmd+C-guard iframe is functional-only — hide its 1px container. */
-      [class*="st-key-copy-guard"] { display: none; }
+      /* Functional-only 1px iframes (Ctrl/Cmd+C guard, fresh-session scroll reset) —
+         hide their containers. */
+      [class*="st-key-copy-guard"],
+      [class*="st-key-scroll-top"] { display: none; }
       /* Friendly empty-state welcome line above the onboarding chips. */
       .chat-welcome {
         font-size: 1.02rem;
@@ -1396,6 +1399,20 @@ if not resolve_api_key():
         "**On Streamlit Cloud:** add it under **Settings → Secrets**."
     )
     st.stop()
+
+# Fresh-session scroll reset: on some mobile browsers the pinned chat input pulls the
+# initial scroll position down, hiding the masthead. Force the first render of a
+# session to the very top, retried across a few frames to beat any late auto-scroll.
+# Fires once per session (flag), so it never fights a user who scrolled intentionally.
+if not st.session_state.get("scrolled_to_top"):
+    st.session_state.scrolled_to_top = True
+    with st.container(key="scroll-top"):
+        st.iframe(
+            "<script>(function(){var w=window.parent;function t(){try{w.scrollTo(0,0);"
+            "w.document.documentElement.scrollTop=0;w.document.body.scrollTop=0;}"
+            "catch(e){}}t();requestAnimationFrame(t);setTimeout(t,60);setTimeout(t,200);"
+            "setTimeout(t,400);w.__scrollTopFired=true;})();</script>",
+            height=1)
 
 with st.sidebar:
     if st.button("🧹 New topic (clear conversation)", width="stretch"):
