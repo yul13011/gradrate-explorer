@@ -21,6 +21,8 @@ IPEDS_*/
 
 # --- Local tooling / editor config ---
 .claude/
+# internal session-handoff notes; keep out of the public repo
+CLAUDE.md
 .vscode/
 .idea/
 
