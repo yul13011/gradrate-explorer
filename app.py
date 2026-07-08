@@ -22,6 +22,7 @@ import math
 import os
 import re
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,14 +86,19 @@ GENERIC_ERROR_MSG = ("Something went wrong on our end. "
 # "What can I ask?" expander and the sidebar "What can this explorer do?" button.
 # Update coverage here in one place.
 CAPABILITIES_TEXT = (
-    "This explorer covers 2,000+ four-year U.S. institutions over 10 years "
-    "(IPEDS collection years 2015–2024). You can ask about: bachelor's graduation "
-    "rates overall and by gender, race/ethnicity, and Pell status; 4- vs. 5- vs. "
-    "6-year completion; transfer-out rates; trends over time; and comparisons or "
-    "rankings of individual institutions — including within a state or between "
-    "public and private schools. You can also adjust any chart by asking (title, "
-    "labels, colors, line styles, sorting, axis range). Note: it compares "
-    "individual institutions but does not compute averages across institutions."
+    "This explorer covers **2,000+ four-year U.S. institutions** over 10 years "
+    "(IPEDS collection years 2015–2024).\n\n"
+    "**You can ask about:**\n\n"
+    "- Bachelor's graduation rates — overall, or by gender, race/ethnicity, and Pell status\n"
+    "- 4-year vs. 5-year vs. 6-year completion\n"
+    "- Transfer-out rates\n"
+    "- Trends over time\n"
+    "- Comparisons or rankings of individual institutions — including within a state, "
+    "or between public and private schools\n\n"
+    "You can also **adjust any chart** by asking — title, labels, colors, line styles, "
+    "sorting, axis range.\n\n"
+    "_Note: this tool compares individual institutions; it does not compute averages "
+    "across institutions. Questions are logged anonymously to help improve this prototype._"
 )
 
 
@@ -662,9 +668,11 @@ def run_full_query(question: str, resolved_names: list[str],
     return item
 
 
-def handle_new_question(question: str, status=None) -> None:
+def handle_new_question(question: str, status=None) -> Optional[str]:
     """Parse + resolve. Either answers directly or parks a confirmation in session_state.
-    `status` is an optional st.status handle advanced as the pipeline progresses."""
+    `status` is an optional st.status handle advanced as the pipeline progresses.
+    Returns the log outcome (one of the QUESTION_OUTCOMES) for question logging, or
+    None to skip logging (chart adjustments aren't data questions)."""
     parsed = parse_question(question, recent_context())
 
     if parsed.intent == "out_of_scope":
@@ -674,7 +682,7 @@ def handle_new_question(question: str, status=None) -> None:
                     or "I can only answer questions about 6-year graduation rates "
                        "at 4-year institutions (2015-2024).",
         })
-        return
+        return "declined_out_of_scope"
 
     if parsed.intent == "chart_adjustment":
         last = last_result_item()
@@ -683,7 +691,7 @@ def handle_new_question(question: str, status=None) -> None:
                 "role": "assistant", "kind": "text",
                 "text": "There's no chart to adjust yet — ask a data question first.",
             })
-            return
+            return None
         if status is not None:
             status.update(label="Adjusting the chart…")
         new_chart, unsupported = adjust_chart(parsed.standalone_question, last)
@@ -694,14 +702,14 @@ def handle_new_question(question: str, status=None) -> None:
                         "y-axis range, line colors/styles/markers, x-axis label rotation, "
                         "bar sort order, and show/hide the data table.",
             })
-            return
+            return None
         st.session_state.history.append({
             "role": "assistant", "kind": "result",
             "summary": "Here's the updated chart.",
             "sql": last["sql"], "df": last["df"],
             "interpreted_as": None, "chart": new_chart, "is_adjustment": True,
         })
-        return
+        return None  # chart tweaks aren't data questions — not logged
 
     # Downstream stages see only the standalone rewrite, never raw history.
     question_final = parsed.standalone_question.strip() or question
@@ -730,7 +738,8 @@ def handle_new_question(question: str, status=None) -> None:
                     + " among the 4-year institutions in this dataset. "
                       "Try the fuller official name (e.g. \"University of California-Berkeley\").",
         })
-        return
+        # An unrecognized institution is a decline-to-answer; bucketed with out-of-scope.
+        return "declined_out_of_scope"
 
     if ambiguous:
         # Confirm-before-execute: nothing runs until the user picks a match.
@@ -738,12 +747,14 @@ def handle_new_question(question: str, status=None) -> None:
             "question": question_final, "interpreted_as": interpreted_as,
             "resolved": resolved, "ambiguous": ambiguous,
         }
-        return
+        return "ambiguity_confirmation"
 
     all_names = [n for names in resolved.values() for n in names]
-    st.session_state.history.append(
-        run_full_query(question_final, all_names, interpreted_as, status)
-    )
+    item = run_full_query(question_final, all_names, interpreted_as, status)
+    st.session_state.history.append(item)
+    # run_full_query returns a "result" item when it answered, or a "text" item when the
+    # SQL stage declined (e.g. the no-cross-institution-averages guard).
+    return "answered" if item.get("kind") == "result" else "declined_aggregate"
 
 
 def friendly_error(exc: Exception) -> str:
@@ -1053,6 +1064,14 @@ def render_confirmation_form() -> None:
 # ---------------------------------------------------------------------------
 
 FEEDBACK_COLUMNS = ["timestamp", "session_id", "rating", "comment", "source"]
+# Worksheet tab names (referenced explicitly by name so writes are unambiguous).
+# NOTE: the feedback tab must be named exactly "feedback" in the Google Sheet — this
+# is coordinated with the tab rename at deploy time (it was previously "Sheet1").
+FEEDBACK_WORKSHEET = "feedback"
+QUESTIONS_WORKSHEET = "questions"
+# Valid values for the questions log's `outcome` column.
+QUESTION_OUTCOMES = ("answered", "declined_out_of_scope", "declined_aggregate",
+                     "ambiguity_confirmation", "error")
 
 
 def submit_feedback(rating: Optional[int], comment: str, source: str) -> None:
@@ -1062,7 +1081,7 @@ def submit_feedback(rating: Optional[int], comment: str, source: str) -> None:
     st.session_state.feedback_given = True
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)  # cached by Streamlit
-        existing = conn.read(worksheet=0, ttl=0).dropna(how="all")
+        existing = conn.read(worksheet=FEEDBACK_WORKSHEET, ttl=0).dropna(how="all")
         existing = (existing.reindex(columns=FEEDBACK_COLUMNS)
                     if len(existing) else pd.DataFrame(columns=FEEDBACK_COLUMNS))
         row = {
@@ -1074,9 +1093,43 @@ def submit_feedback(rating: Optional[int], comment: str, source: str) -> None:
         }
         combined = pd.concat([existing, pd.DataFrame([row])],
                              ignore_index=True)[FEEDBACK_COLUMNS]
-        conn.update(worksheet=0, data=combined)
+        conn.update(worksheet=FEEDBACK_WORKSHEET, data=combined)
     except Exception:
         logging.getLogger("feedback").exception("feedback write failed (source=%s)", source)
+
+
+# Cached gspread Worksheet handle for the questions tab (opened once, shared). Set the
+# first time a question is logged, from inside the background thread, so the open never
+# blocks the UX. `conn.client._client` reaches the raw gspread client behind the cached
+# connection (st-gsheets-connection has no public append_row); guarded by quiet-fail.
+_questions_ws = None
+
+
+def log_question(question: str, outcome: str) -> None:
+    """Append one row to the 'questions' tab (timestamp, session_id, question, outcome).
+    Fire-and-forget on a daemon thread so it NEVER slows the answer, and quiet-fail like
+    the feedback write — any failure is logged server-side and never reaches the visitor.
+    Uses gspread's atomic append_row (no read-modify-write, so no lost rows under load)."""
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)  # cached; no network here
+        url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+        row = [datetime.now(timezone.utc).isoformat(),
+               st.session_state.get("session_id", ""), question, outcome]
+    except Exception:
+        logging.getLogger("question_log").exception("question log setup failed")
+        return
+
+    def _append() -> None:
+        global _questions_ws
+        try:
+            if _questions_ws is None:
+                _questions_ws = conn.client._client.open_by_url(url).worksheet(QUESTIONS_WORKSHEET)
+            _questions_ws.append_row(row, value_input_option="RAW")
+        except Exception:
+            logging.getLogger("question_log").exception(
+                "question log write failed (outcome=%s)", outcome)
+
+    threading.Thread(target=_append, daemon=True).start()
     st.toast("Thanks — this helps improve the prototype!", icon="✅")
 
 
@@ -1502,11 +1555,16 @@ if question:
         # as handle_new_question / run_full_query move through the pipeline.
         status = st.status("Interpreting your question…", expanded=False)
         try:
-            handle_new_question(question, status)
+            outcome = handle_new_question(question, status)
             status.update(label="Done", state="complete")
         except Exception as exc:
+            outcome = "error"
             status.update(label="Something went wrong", state="error")
             st.session_state.history.append({
                 "role": "assistant", "kind": "text", "text": friendly_error(exc),
             })
+        # Log the question AFTER the response is on screen (non-blocking, quiet-fail).
+        # `outcome` is None for chart adjustments, which aren't logged.
+        if outcome:
+            log_question(question, outcome)
     st.rerun()
