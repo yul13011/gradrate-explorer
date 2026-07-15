@@ -4,6 +4,8 @@ Ask plain-English questions about U.S. college graduation rates and get back an
 answer, a chart, and a table — powered by the Claude API translating natural
 language into SQL over public [IPEDS](https://nces.ed.gov/ipeds/) data.
 
+🌐 [Click here to try the app.](https://college-graduation-rate-explorer.streamlit.app/)
+
 > **Prototype / proof of concept.** Built on public IPEDS data to demonstrate a
 > natural-language-to-SQL data app. Verify any figure against the official source
 > before institutional use.
